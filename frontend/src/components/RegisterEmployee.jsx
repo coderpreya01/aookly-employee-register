@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import PhotoSlot from './PhotoSlot.jsx';
 
 const API = import.meta.env.VITE_API_URL || '';
@@ -35,6 +35,29 @@ const ICONS = {
   ),
 };
 
+/* ── Form field (defined OUTSIDE the main component so it is not
+      re-created on every keystroke — this fixes the focus-loss bug) ── */
+function Field({ name, label, placeholder, value, onChange, type = 'text', colSpan = '' }) {
+  return (
+    <label className={`block ${colSpan}`}>
+      <span className="mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold text-slate-600">
+        {ICONS[name]}
+        {label}
+      </span>
+      <input
+        className="input-field"
+        type={type}
+        name={name}
+        value={value}
+        onChange={onChange}
+        required
+        placeholder={placeholder}
+        id={`field-${name}`}
+      />
+    </label>
+  );
+}
+
 export default function RegisterEmployee() {
   const [formData, setFormData] = useState(EMPTY);
   const [photos, setPhotos] = useState([null, null, null]);
@@ -42,9 +65,20 @@ export default function RegisterEmployee() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ type: '', text: '' });
 
-  useEffect(() => () => previews.forEach((p) => p && URL.revokeObjectURL(p)), [previews]);
+  // Keep the latest previews in a ref so we can revoke them only on unmount
+  const previewsRef = useRef(previews);
+  previewsRef.current = previews;
 
-  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
+  useEffect(() => {
+    return () => {
+      previewsRef.current.forEach((p) => p && URL.revokeObjectURL(p));
+    };
+  }, []);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  };
 
   const handlePhotoSet = (index, file) => {
     const newPhotos = [...photos];
@@ -73,6 +107,7 @@ export default function RegisterEmployee() {
       if (res.ok) {
         setStatus({ type: 'success', text: '✓  Employee registered successfully!' });
         setFormData(EMPTY);
+        previews.forEach((p) => p && URL.revokeObjectURL(p));
         setPhotos([null, null, null]);
         setPreviews([null, null, null]);
       } else {
@@ -89,26 +124,6 @@ export default function RegisterEmployee() {
   /* Progress dots */
   const photoCount = photos.filter(Boolean).length;
   const fieldsFilled = Object.values(formData).every((v) => v.trim() !== '');
-
-  /* Render a form field with icon */
-  const Field = ({ name, label, placeholder, type = 'text', colSpan = '' }) => (
-    <label className={`block ${colSpan}`}>
-      <span className="mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold text-slate-600">
-        {ICONS[name]}
-        {label}
-      </span>
-      <input
-        className="input-field"
-        type={type}
-        name={name}
-        value={formData[name]}
-        onChange={handleChange}
-        required
-        placeholder={placeholder}
-        id={`field-${name}`}
-      />
-    </label>
-  );
 
   return (
     <div className="mx-auto w-full max-w-2xl xl:max-w-3xl">
@@ -139,11 +154,43 @@ export default function RegisterEmployee() {
           <div>
             <SectionHeader icon="👤" title="Employee Details" />
             <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field name="employeeId" label="Employee ID" placeholder="e.g. EMP001" />
-              <Field name="name" label="Full Name" placeholder="Enter full name" />
-              <Field name="email" label="Email Address" placeholder="name@company.com" type="email" />
-              <Field name="designation" label="Designation" placeholder="e.g. Software Engineer" />
-              <Field name="department" label="Department" placeholder="e.g. Engineering" colSpan="sm:col-span-2" />
+              <Field
+                name="employeeId"
+                label="Employee ID"
+                placeholder="e.g. EMP001"
+                value={formData.employeeId}
+                onChange={handleChange}
+              />
+              <Field
+                name="name"
+                label="Full Name"
+                placeholder="Enter full name"
+                value={formData.name}
+                onChange={handleChange}
+              />
+              <Field
+                name="email"
+                label="Email Address"
+                placeholder="name@company.com"
+                type="email"
+                value={formData.email}
+                onChange={handleChange}
+              />
+              <Field
+                name="designation"
+                label="Designation"
+                placeholder="e.g. Software Engineer"
+                value={formData.designation}
+                onChange={handleChange}
+              />
+              <Field
+                name="department"
+                label="Department"
+                placeholder="e.g. Engineering"
+                colSpan="sm:col-span-2"
+                value={formData.department}
+                onChange={handleChange}
+              />
             </div>
           </div>
 
