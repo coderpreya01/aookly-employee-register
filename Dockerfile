@@ -34,7 +34,7 @@ RUN pip install --no-cache-dir -r backend/requirements.txt \
     && pip uninstall -y opencv-python opencv-contrib-python || true \
     && pip install --no-cache-dir --no-deps --force-reinstall opencv-python-headless
 
-# Copy backend files
+# Copy backend files (includes migrate_photos_to_cloudinary.py and employee_photos/ if present)
 COPY backend/ backend/
 
 # Copy built frontend from Stage 1
@@ -44,5 +44,7 @@ EXPOSE 8001
 
 WORKDIR /app/backend
 
-# Render provides $PORT; falls back to 8001 locally
-CMD ["sh", "-c", "uvicorn backend_app:app --host 0.0.0.0 --port ${PORT:-8001}"]
+# On every start: 1) upload any local /photos/... images to Cloudinary and update the DB
+# (already-uploaded photos are skipped; "|| true" keeps the app starting even if migration fails)
+# 2) start the API. Render provides $PORT; falls back to 8001 locally.
+CMD ["sh", "-c", "python migrate_photos_to_cloudinary.py || true; exec uvicorn backend_app:app --host 0.0.0.0 --port ${PORT:-8001}"]
