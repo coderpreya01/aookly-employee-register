@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#f0f4f8] text-slate-900 antialiased;
+    font-family: 'Inter', system-ui, sans-serif;
+    background-image: radial-gradient(circle at 1px 1px, #cbd5e1 1px, transparent 0);
+    background-size: 28px 28px;
+  }
+
+  * {
+    @apply scroll-smooth;
+  }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { @apply bg-slate-100; }
+  ::-webkit-scrollbar-thumb { @apply rounded-full bg-slate-300; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-slate-400; }
+}
+
+@layer utilities {
+  .elekgo-logo-text {
+    font-family: 'Outfit', sans-serif;
+  }
+  .card-glass {
+    background: rgba(255,255,255,0.92);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+  .input-field {
+    @apply w-full rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-900
+           placeholder:text-slate-400 transition-all duration-200
+           focus:border-[#c0392b] focus:outline-none focus:ring-4 focus:ring-red-100
+           hover:border-slate-300;
+  }
+  .btn-primary {
+    @apply w-full rounded-xl bg-gradient-to-r from-[#c0392b] to-[#96281b] px-4 py-3.5
+           font-semibold text-white shadow-lg shadow-red-200/50
+           transition-all duration-200 hover:shadow-red-300/60 hover:brightness-110
+           active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none;
+  }
+}
