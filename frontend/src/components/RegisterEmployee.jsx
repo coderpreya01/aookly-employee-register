@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import PhotoSlot from './PhotoSlot.jsx';
 
 const API = import.meta.env.VITE_API_URL || '';
@@ -35,29 +35,6 @@ const ICONS = {
   ),
 };
 
-/* ── Form field (defined OUTSIDE the main component so it is not
-      re-created on every keystroke — this fixes the focus-loss bug) ── */
-function Field({ name, label, placeholder, value, onChange, type = 'text', colSpan = '' }) {
-  return (
-    <label className={`block ${colSpan}`}>
-      <span className="mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold text-slate-600">
-        {ICONS[name]}
-        {label}
-      </span>
-      <input
-        className="input-field"
-        type={type}
-        name={name}
-        value={value}
-        onChange={onChange}
-        required
-        placeholder={placeholder}
-        id={`field-${name}`}
-      />
-    </label>
-  );
-}
-
 export default function RegisterEmployee() {
   const [formData, setFormData] = useState(EMPTY);
   const [photos, setPhotos] = useState([null, null, null]);
@@ -65,20 +42,9 @@ export default function RegisterEmployee() {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState({ type: '', text: '' });
 
-  // Keep the latest previews in a ref so we can revoke them only on unmount
-  const previewsRef = useRef(previews);
-  previewsRef.current = previews;
+  useEffect(() => () => previews.forEach((p) => p && URL.revokeObjectURL(p)), [previews]);
 
-  useEffect(() => {
-    return () => {
-      previewsRef.current.forEach((p) => p && URL.revokeObjectURL(p));
-    };
-  }, []);
-
-  const handleChange = (e) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
-  };
+  const handleChange = (e) => setFormData({ ...formData, [e.target.name]: e.target.value });
 
   const handlePhotoSet = (index, file) => {
     const newPhotos = [...photos];
@@ -107,7 +73,6 @@ export default function RegisterEmployee() {
       if (res.ok) {
         setStatus({ type: 'success', text: '✓  Employee registered successfully!' });
         setFormData(EMPTY);
-        previews.forEach((p) => p && URL.revokeObjectURL(p));
         setPhotos([null, null, null]);
         setPreviews([null, null, null]);
       } else {
@@ -154,43 +119,11 @@ export default function RegisterEmployee() {
           <div>
             <SectionHeader icon="👤" title="Employee Details" />
             <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <Field
-                name="employeeId"
-                label="Employee ID"
-                placeholder="e.g. EMP001"
-                value={formData.employeeId}
-                onChange={handleChange}
-              />
-              <Field
-                name="name"
-                label="Full Name"
-                placeholder="Enter full name"
-                value={formData.name}
-                onChange={handleChange}
-              />
-              <Field
-                name="email"
-                label="Email Address"
-                placeholder="name@company.com"
-                type="email"
-                value={formData.email}
-                onChange={handleChange}
-              />
-              <Field
-                name="designation"
-                label="Designation"
-                placeholder="e.g. Software Engineer"
-                value={formData.designation}
-                onChange={handleChange}
-              />
-              <Field
-                name="department"
-                label="Department"
-                placeholder="e.g. Engineering"
-                colSpan="sm:col-span-2"
-                value={formData.department}
-                onChange={handleChange}
-              />
+              <Field name="employeeId" label="Employee ID" placeholder="e.g. EMP001" formData={formData} onChange={handleChange} />
+              <Field name="name" label="Full Name" placeholder="Enter full name" formData={formData} onChange={handleChange} />
+              <Field name="email" label="Email Address" placeholder="name@company.com" type="email" formData={formData} onChange={handleChange} />
+              <Field name="designation" label="Designation" placeholder="e.g. Software Engineer" formData={formData} onChange={handleChange} />
+              <Field name="department" label="Department" placeholder="e.g. Engineering" colSpan="sm:col-span-2" formData={formData} onChange={handleChange} />
             </div>
           </div>
 
@@ -287,6 +220,28 @@ function SectionHeader({ icon, title }) {
       <span className="text-base">{icon}</span>
       <h2 className="text-sm font-bold text-slate-800 sm:text-[15px]">{title}</h2>
     </div>
+  );
+}
+
+/* ── Helper: Form field (stable identity – defined outside the parent) ── */
+function Field({ name, label, placeholder, type = 'text', colSpan = '', formData, onChange }) {
+  return (
+    <label className={`block ${colSpan}`}>
+      <span className="mb-1.5 flex items-center gap-1.5 text-[13px] font-semibold text-slate-600">
+        {ICONS[name]}
+        {label}
+      </span>
+      <input
+        className="input-field"
+        type={type}
+        name={name}
+        value={formData[name]}
+        onChange={onChange}
+        required
+        placeholder={placeholder}
+        id={`field-${name}`}
+      />
+    </label>
   );
 }
 

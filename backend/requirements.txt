@@ -12,3 +12,4 @@ dlib-bin==19.24.6
 insightface
 onnxruntime
 opencv-python-headless
+cloudinary

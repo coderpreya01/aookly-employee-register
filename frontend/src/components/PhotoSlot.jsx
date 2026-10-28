@@ -118,6 +118,14 @@ export default function PhotoSlot({ index, preview, onPhotoSet }) {
   const streamRef = useRef(null);
   const imgRef = useRef(null);
 
+  useEffect(() => {
+    if (preview) {
+      setMode("preview");
+    } else if (mode !== "camera") {
+      setMode("idle");
+    }
+  }, [preview]);
+
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -143,6 +151,12 @@ export default function PhotoSlot({ index, preview, onPhotoSet }) {
       streamRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    return () => {
+      stopCamera();
+    };
+  }, [stopCamera]);
 
   const capturePhoto = () => {
     const video = videoRef.current;

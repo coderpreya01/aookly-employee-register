@@ -11,7 +11,13 @@ from insightface.app import FaceAnalysis
 import numpy as np
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from typing import Optional
+
+import cloudinary
+import cloudinary.uploader
+import cloudinary.api
+
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -26,6 +32,22 @@ if not DATABASE_URL:
 PORT = int(os.getenv("PORT", 8001))
 HOST = os.getenv("HOST", "0.0.0.0")
 
+# Cloudinary configuration
+CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_CLOUD_NAME,
+        api_key=CLOUDINARY_API_KEY,
+        api_secret=CLOUDINARY_API_SECRET,
+        secure=True,
+    )
+    print(f"Cloudinary configured successfully for cloud: {CLOUDINARY_CLOUD_NAME}")
+else:
+    print("Warning: Cloudinary credentials not fully configured in .env")
+
 # Directory to save uploaded images
 UPLOAD_DIR = "employee_photos"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -39,6 +61,25 @@ face_app.prepare(ctx_id=-1, det_size=(640, 640))
 
 # Pose labels for the 3 required photos
 PHOTO_LABELS = ["left_side", "right_side", "front_face"]
+
+
+def upload_to_cloudinary(image_bytes: bytes, employee_id: str, pose_name: str) -> Optional[str]:
+    """Uploads photo bytes to Cloudinary and returns the secure URL, or None if failed."""
+    if not (CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET):
+        return None
+    try:
+        timestamp = int(datetime.now().timestamp())
+        res = cloudinary.uploader.upload(
+            image_bytes,
+            folder=f"emp_register/{employee_id}",
+            public_id=f"{pose_name}_{timestamp}",
+            overwrite=True,
+            resource_type="image",
+        )
+        return res.get("secure_url")
+    except Exception as e:
+        print(f"Cloudinary upload failed for {employee_id} {pose_name}: {e}")
+        return None
 
 SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS aookly_register_employees (
@@ -183,7 +224,7 @@ async def register_employee(
             emb = await asyncio.to_thread(compute_embedding, data, pose_labels[idx])
             embeddings.append(emb)
 
-        # Process and save photos — store URL-accessible paths (relative to /photos mount)
+        # Process and save photos — upload to Cloudinary and also keep local backup
         photo_urls = []
         emp_folder = os.path.join(UPLOAD_DIR, employeeId)
         os.makedirs(emp_folder, exist_ok=True)
@@ -197,8 +238,13 @@ async def register_employee(
             with open(file_path, "wb") as buffer:
                 buffer.write(data)
 
-            # Store as a URL path that the frontend can access via /photos/
-            photo_urls.append(f"/photos/{employeeId}/{file_name}")
+            # Upload to Cloudinary
+            cloud_url = await asyncio.to_thread(upload_to_cloudinary, data, employeeId, pose_name)
+            if cloud_url:
+                photo_urls.append(cloud_url)
+            else:
+                # Fallback to local URL path
+                photo_urls.append(f"/photos/{employeeId}/{file_name}")
 
         # Insert employee + embeddings in one transaction
         async with pool.acquire() as conn:
@@ -338,25 +384,357 @@ async def identify_face(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ── Dashboard & Registered Employee Routes ────────────────────────────────
+dashboard_router = APIRouter(tags=["Dashboard"])
+
+
+@dashboard_router.get("/api/dashboard")
+async def get_dashboard(
+    search: Optional[str] = Query(None, description="Search by name, employee_id, email, designation, or department"),
+    limit: int = Query(100, ge=1, le=1000, description="Max employees to return"),
+    offset: int = Query(0, ge=0, description="Pagination offset"),
+):
+    """Retrieve registered employee details for the dashboard."""
+    try:
+        pool = app.state.pool
+        async with pool.acquire() as conn:
+            total_count = await conn.fetchval("SELECT COUNT(*) FROM aookly_register_employees")
+
+            if search and search.strip():
+                search_term = f"%{search.strip()}%"
+                filtered_count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)
+                    FROM aookly_register_employees
+                    WHERE name ILIKE $1
+                       OR employee_id ILIKE $1
+                       OR email ILIKE $1
+                       OR designation ILIKE $1
+                       OR department ILIKE $1
+                    """,
+                    search_term,
+                )
+                rows = await conn.fetch(
+                    """
+                    SELECT id, employee_id, name, email, designation, department, photos, created_at
+                    FROM aookly_register_employees
+                    WHERE name ILIKE $1
+                       OR employee_id ILIKE $1
+                       OR email ILIKE $1
+                       OR designation ILIKE $1
+                       OR department ILIKE $1
+                    ORDER BY created_at DESC
+                    LIMIT $2 OFFSET $3
+                    """,
+                    search_term,
+                    limit,
+                    offset,
+                )
+            else:
+                filtered_count = total_count
+                rows = await conn.fetch(
+                    """
+                    SELECT id, employee_id, name, email, designation, department, photos, created_at
+                    FROM aookly_register_employees
+                    ORDER BY created_at DESC
+                    LIMIT $1 OFFSET $2
+                    """,
+                    limit,
+                    offset,
+                )
+
+            employees = [
+                {
+                    "id": row["id"],
+                    "employee_id": row["employee_id"],
+                    "name": row["name"],
+                    "email": row["email"],
+                    "designation": row["designation"],
+                    "department": row["department"],
+                    "photos": row["photos"] or [],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                }
+                for row in rows
+            ]
+
+            return {
+                "status": "success",
+                "total_registered_employees": total_count,
+                "filtered_count": filtered_count,
+                "employees": employees,
+            }
+    except Exception as e:
+        print(f"Error fetching dashboard data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@dashboard_router.get("/api/dashboard/employees")
+@dashboard_router.get("/api/employees")
+async def get_all_registered_employees():
+    """Retrieve all registered employees details."""
+    try:
+        pool = app.state.pool
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, employee_id, name, email, designation, department, photos, created_at
+                FROM aookly_register_employees
+                ORDER BY created_at DESC
+                """
+            )
+            employees = [
+                {
+                    "id": row["id"],
+                    "employee_id": row["employee_id"],
+                    "name": row["name"],
+                    "email": row["email"],
+                    "designation": row["designation"],
+                    "department": row["department"],
+                    "photos": row["photos"] or [],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                }
+                for row in rows
+            ]
+            return {
+                "status": "success",
+                "total": len(employees),
+                "employees": employees,
+            }
+    except Exception as e:
+        print(f"Error fetching registered employees: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@dashboard_router.get("/api/dashboard/employee/{employee_id}")
+@dashboard_router.get("/api/employees/{employee_id}")
+async def get_registered_employee_by_id(employee_id: str):
+    """Retrieve single registered employee details by employee_id."""
+    try:
+        pool = app.state.pool
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, employee_id, name, email, designation, department, photos, created_at
+                FROM aookly_register_employees
+                WHERE employee_id = $1
+                """,
+                employee_id,
+            )
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+            return {
+                "status": "success",
+                "employee": {
+                    "id": row["id"],
+                    "employee_id": row["employee_id"],
+                    "name": row["name"],
+                    "email": row["email"],
+                    "designation": row["designation"],
+                    "department": row["department"],
+                    "photos": row["photos"] or [],
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                },
+            }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"Error fetching employee details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@dashboard_router.delete("/api/dashboard/employee/{employee_id}")
+@dashboard_router.delete("/api/employees/{employee_id}")
+async def delete_employee(employee_id: str):
+    """Delete employee and remove face embeddings, attendance records, and photos."""
+    try:
+        pool = app.state.pool
+        async with pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                "SELECT employee_id FROM aookly_register_employees WHERE employee_id = $1",
+                employee_id,
+            )
+            if not existing:
+                raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+            # Cascade delete in DB (cascades to embeddings and attendance)
+            await conn.execute("DELETE FROM aookly_register_employees WHERE employee_id = $1", employee_id)
+
+        # Remove local folder
+        emp_folder = os.path.join(UPLOAD_DIR, employee_id)
+        if os.path.isdir(emp_folder):
+            shutil.rmtree(emp_folder, ignore_errors=True)
+
+        # Cleanup Cloudinary photos
+        if CLOUDINARY_CLOUD_NAME and CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET:
+            try:
+                await asyncio.to_thread(
+                    cloudinary.api.delete_resources_by_prefix,
+                    f"emp_register/{employee_id}",
+                )
+            except Exception as ce:
+                print(f"Cloudinary deletion notice: {ce}")
+
+        return {
+            "status": "success",
+            "message": f"Employee '{employee_id}' and all associated records deleted successfully",
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"Error deleting employee: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@dashboard_router.put("/api/dashboard/employee/{employee_id}")
+@dashboard_router.put("/api/employees/{employee_id}")
+@dashboard_router.post("/api/employees/{employee_id}/update")
+async def update_employee(
+    employee_id: str,
+    name: Optional[str] = Form(None),
+    email: Optional[str] = Form(None),
+    designation: Optional[str] = Form(None),
+    department: Optional[str] = Form(None),
+    photo_1: Optional[UploadFile] = File(None),
+    photo_2: Optional[UploadFile] = File(None),
+    photo_3: Optional[UploadFile] = File(None),
+):
+    """Update employee details and optionally re-upload/re-capture any of the 3 photos with face re-embedding."""
+    try:
+        pool = app.state.pool
+        async with pool.acquire() as conn:
+            emp = await conn.fetchrow(
+                "SELECT * FROM aookly_register_employees WHERE employee_id = $1",
+                employee_id,
+            )
+            if not emp:
+                raise HTTPException(status_code=404, detail=f"Employee '{employee_id}' not found")
+
+            curr_name = name.strip() if name and name.strip() else emp["name"]
+            curr_email = email.strip() if email and email.strip() else emp["email"]
+            curr_designation = designation.strip() if designation is not None else emp["designation"]
+            curr_department = department.strip() if department is not None else emp["department"]
+
+            photos_list = list(emp["photos"]) if emp["photos"] else ["", "", ""]
+            while len(photos_list) < 3:
+                photos_list.append("")
+
+            emp_folder = os.path.join(UPLOAD_DIR, employee_id)
+            os.makedirs(emp_folder, exist_ok=True)
+
+            updated_photos = [photo_1, photo_2, photo_3]
+            pose_labels = ["Left Side", "Right Side", "Front Face"]
+
+            for idx, p_file in enumerate(updated_photos):
+                if p_file is not None and getattr(p_file, "filename", None):
+                    data = await p_file.read()
+                    if len(data) > 0:
+                        # 1. Compute embedding
+                        emb = await asyncio.to_thread(compute_embedding, data, pose_labels[idx])
+
+                        # 2. Save locally
+                        pose_name = PHOTO_LABELS[idx]
+                        ext = p_file.filename.split('.')[-1].lower() if '.' in p_file.filename else 'jpg'
+                        file_name = f"{pose_name}.{ext}"
+                        file_path = os.path.join(emp_folder, file_name)
+                        with open(file_path, "wb") as buffer:
+                            buffer.write(data)
+
+                        # 3. Upload to Cloudinary
+                        cloud_url = await asyncio.to_thread(upload_to_cloudinary, data, employee_id, pose_name)
+                        if cloud_url:
+                            photos_list[idx] = cloud_url
+                        else:
+                            photos_list[idx] = f"/photos/{employee_id}/{file_name}"
+
+                        # 4. Upsert face embedding in database
+                        await conn.execute(
+                            """
+                            INSERT INTO aookly_register_faceemdding (employee_id, photo_index, embedding, created_at)
+                            VALUES ($1, $2, $3, NOW())
+                            ON CONFLICT (employee_id, photo_index)
+                            DO UPDATE SET embedding = EXCLUDED.embedding, created_at = NOW()
+                            """,
+                            employee_id,
+                            idx + 1,
+                            emb.tolist(),
+                        )
+
+            # Update aookly_register_employees record
+            await conn.execute(
+                """
+                UPDATE aookly_register_employees
+                SET name = $1, email = $2, designation = $3, department = $4, photos = $5
+                WHERE employee_id = $6
+                """,
+                curr_name,
+                curr_email,
+                curr_designation,
+                curr_department,
+                photos_list,
+                employee_id,
+            )
+
+            updated_emp = await conn.fetchrow(
+                "SELECT id, employee_id, name, email, designation, department, photos, created_at FROM aookly_register_employees WHERE employee_id = $1",
+                employee_id,
+            )
+
+        return {
+            "status": "success",
+            "message": "Employee updated successfully",
+            "employee": {
+                "id": updated_emp["id"],
+                "employee_id": updated_emp["employee_id"],
+                "name": updated_emp["name"],
+                "email": updated_emp["email"],
+                "designation": updated_emp["designation"],
+                "department": updated_emp["department"],
+                "photos": updated_emp["photos"] or [],
+                "created_at": updated_emp["created_at"].isoformat() if updated_emp["created_at"] else None,
+            },
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"Error updating employee: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+app.include_router(dashboard_router)
+
+
 from fastapi.responses import FileResponse
+
+def get_frontend_dist_dir():
+    candidates = [
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "dist"),
+        "/app/frontend/dist",
+        os.path.abspath("frontend/dist"),
+        os.path.abspath("../frontend/dist"),
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
 
 @app.get("/{full_path:path}")
 async def serve_spa(full_path: str):
     if full_path.startswith("api/") or full_path.startswith("photos/"):
         raise HTTPException(status_code=404, detail="Not Found")
-    
-    # Go up one directory from backend to reach the root, then into frontend/dist
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    dist_dir = os.path.join(base_dir, "frontend", "dist")
-    file_path = os.path.join(dist_dir, full_path)
-    
-    if os.path.isfile(file_path):
-        return FileResponse(file_path)
-    
-    index_file = os.path.join(dist_dir, "index.html")
-    if os.path.isfile(index_file):
-        return FileResponse(index_file)
-        
+
+    dist_dir = get_frontend_dist_dir()
+    if dist_dir:
+        file_path = os.path.join(dist_dir, full_path)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+
+        index_file = os.path.join(dist_dir, "index.html")
+        if os.path.isfile(index_file):
+            return FileResponse(index_file)
+
     raise HTTPException(status_code=404, detail="Not Found")
 
 if __name__ == "__main__":
